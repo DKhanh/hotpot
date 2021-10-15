@@ -30,9 +30,9 @@ def create_exp_dir(path, scripts_to_save=None):
             dst_file = os.path.join(path, 'scripts', os.path.basename(script))
             shutil.copyfile(script, dst_file)
 
-nll_sum = nn.CrossEntropyLoss(reduction=False, ignore_index=IGNORE_INDEX)
-nll_average = nn.CrossEntropyLoss(reduction=True, ignore_index=IGNORE_INDEX)
-nll_all = nn.CrossEntropyLoss(reduction=False, ignore_index=IGNORE_INDEX)
+nll_sum = nn.CrossEntropyLoss(size_average=False, ignore_index=IGNORE_INDEX)
+nll_average = nn.CrossEntropyLoss(size_average=True, ignore_index=IGNORE_INDEX)
+nll_all = nn.CrossEntropyLoss(reduce=False, ignore_index=IGNORE_INDEX)
 
 def train(config):
     with open(config.word_emb_file, "r") as fh:
