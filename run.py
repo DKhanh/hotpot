@@ -9,7 +9,7 @@ from sp_model import SPModel
 # from oracle_model import OracleModel, OracleModelV2
 # from util import get_record_parser, convert_tokens, evaluate, get_batch_dataset, get_dataset
 from util import convert_tokens, evaluate
-from util import get_buckets, DataIterator, IGNORE_INDEX
+from util import get_buckets, get_buckets2, DataIterator, IGNORE_INDEX
 import time
 import shutil
 import random
@@ -30,9 +30,9 @@ def create_exp_dir(path, scripts_to_save=None):
             dst_file = os.path.join(path, 'scripts', os.path.basename(script))
             shutil.copyfile(script, dst_file)
 
-nll_sum = nn.CrossEntropyLoss(size_average=False, ignore_index=IGNORE_INDEX)
-nll_average = nn.CrossEntropyLoss(size_average=True, ignore_index=IGNORE_INDEX)
-nll_all = nn.CrossEntropyLoss(reduce=False, ignore_index=IGNORE_INDEX)
+nll_sum = nn.CrossEntropyLoss(reduction=False, ignore_index=IGNORE_INDEX)
+nll_average = nn.CrossEntropyLoss(reduction=True, ignore_index=IGNORE_INDEX)
+nll_all = nn.CrossEntropyLoss(reduction=False, ignore_index=IGNORE_INDEX)
 
 def train(config):
     with open(config.word_emb_file, "r") as fh:
@@ -63,8 +63,8 @@ def train(config):
         logging('    - {} : {}'.format(k, v))
 
     logging("Building model...")
-    train_buckets = get_buckets(config.train_record_file)
-    dev_buckets = get_buckets(config.dev_record_file)
+    train_buckets = get_buckets2(config.train_record_file)
+    dev_buckets = get_buckets2(config.dev_record_file)
 
     def build_train_iterator():
         return DataIterator(train_buckets, config.batch_size, config.para_limit, config.ques_limit, config.char_limit, True, config.sent_limit)
@@ -116,7 +116,7 @@ def train(config):
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.data[0]
+            total_loss += loss.item()
             global_step += 1
 
             if global_step % config.period == 0:
@@ -157,70 +157,72 @@ def train(config):
     logging('best_dev_F1 {}'.format(best_dev_F1))
 
 def evaluate_batch(data_source, model, max_batches, eval_file, config):
-    answer_dict = {}
-    sp_dict = {}
-    total_loss, step_cnt = 0, 0
-    iter = data_source
-    for step, data in enumerate(iter):
-        if step >= max_batches and max_batches > 0: break
+    with torch.no_grad():
+        answer_dict = {}
+        sp_dict = {}
+        total_loss, step_cnt = 0, 0
+        iter = data_source
+        for step, data in enumerate(iter):
+            if step >= max_batches and max_batches > 0: break
 
-        context_idxs = Variable(data['context_idxs'], volatile=True)
-        ques_idxs = Variable(data['ques_idxs'], volatile=True)
-        context_char_idxs = Variable(data['context_char_idxs'], volatile=True)
-        ques_char_idxs = Variable(data['ques_char_idxs'], volatile=True)
-        context_lens = Variable(data['context_lens'], volatile=True)
-        y1 = Variable(data['y1'], volatile=True)
-        y2 = Variable(data['y2'], volatile=True)
-        q_type = Variable(data['q_type'], volatile=True)
-        is_support = Variable(data['is_support'], volatile=True)
-        start_mapping = Variable(data['start_mapping'], volatile=True)
-        end_mapping = Variable(data['end_mapping'], volatile=True)
-        all_mapping = Variable(data['all_mapping'], volatile=True)
+            context_idxs = Variable(data['context_idxs'])
+            ques_idxs = Variable(data['ques_idxs'])
+            context_char_idxs = Variable(data['context_char_idxs'])
+            ques_char_idxs = Variable(data['ques_char_idxs'])
+            context_lens = Variable(data['context_lens'])
+            y1 = Variable(data['y1'])
+            y2 = Variable(data['y2'])
+            q_type = Variable(data['q_type'])
+            is_support = Variable(data['is_support'])
+            start_mapping = Variable(data['start_mapping'])
+            end_mapping = Variable(data['end_mapping'])
+            all_mapping = Variable(data['all_mapping'])
 
-        logit1, logit2, predict_type, predict_support, yp1, yp2 = model(context_idxs, ques_idxs, context_char_idxs, ques_char_idxs, context_lens, start_mapping, end_mapping, all_mapping, return_yp=True)
-        loss = (nll_sum(predict_type, q_type) + nll_sum(logit1, y1) + nll_sum(logit2, y2)) / context_idxs.size(0) + config.sp_lambda * nll_average(predict_support.view(-1, 2), is_support.view(-1))
-        answer_dict_ = convert_tokens(eval_file, data['ids'], yp1.data.cpu().numpy().tolist(), yp2.data.cpu().numpy().tolist(), np.argmax(predict_type.data.cpu().numpy(), 1))
-        answer_dict.update(answer_dict_)
+            logit1, logit2, predict_type, predict_support, yp1, yp2 = model(context_idxs, ques_idxs, context_char_idxs, ques_char_idxs, context_lens, start_mapping, end_mapping, all_mapping, return_yp=True)
+            loss = (nll_sum(predict_type, q_type) + nll_sum(logit1, y1) + nll_sum(logit2, y2)) / context_idxs.size(0) + config.sp_lambda * nll_average(predict_support.view(-1, 2), is_support.view(-1))
+            answer_dict_ = convert_tokens(eval_file, data['ids'], yp1.data.cpu().numpy().tolist(), yp2.data.cpu().numpy().tolist(), np.argmax(predict_type.data.cpu().numpy(), 1))
+            answer_dict.update(answer_dict_)
 
-        total_loss += loss.data[0]
-        step_cnt += 1
-    loss = total_loss / step_cnt
-    metrics = evaluate(eval_file, answer_dict)
-    metrics['loss'] = loss
+            total_loss += loss.item()
+            step_cnt += 1
+        loss = total_loss / step_cnt
+        metrics = evaluate(eval_file, answer_dict)
+        metrics['loss'] = loss
 
     return metrics
 
 def predict(data_source, model, eval_file, config, prediction_file):
-    answer_dict = {}
-    sp_dict = {}
-    sp_th = config.sp_threshold
-    for step, data in enumerate(tqdm(data_source)):
-        context_idxs = Variable(data['context_idxs'], volatile=True)
-        ques_idxs = Variable(data['ques_idxs'], volatile=True)
-        context_char_idxs = Variable(data['context_char_idxs'], volatile=True)
-        ques_char_idxs = Variable(data['ques_char_idxs'], volatile=True)
-        context_lens = Variable(data['context_lens'], volatile=True)
-        start_mapping = Variable(data['start_mapping'], volatile=True)
-        end_mapping = Variable(data['end_mapping'], volatile=True)
-        all_mapping = Variable(data['all_mapping'], volatile=True)
+    with torch.no_grad():
+        answer_dict = {}
+        sp_dict = {}
+        sp_th = config.sp_threshold
+        for step, data in enumerate(tqdm(data_source)):
+            context_idxs = Variable(data['context_idxs'])
+            ques_idxs = Variable(data['ques_idxs'])
+            context_char_idxs = Variable(data['context_char_idxs'])
+            ques_char_idxs = Variable(data['ques_char_idxs'])
+            context_lens = Variable(data['context_lens'])
+            start_mapping = Variable(data['start_mapping'])
+            end_mapping = Variable(data['end_mapping'])
+            all_mapping = Variable(data['all_mapping'])
 
-        logit1, logit2, predict_type, predict_support, yp1, yp2 = model(context_idxs, ques_idxs, context_char_idxs, ques_char_idxs, context_lens, start_mapping, end_mapping, all_mapping, return_yp=True)
-        answer_dict_ = convert_tokens(eval_file, data['ids'], yp1.data.cpu().numpy().tolist(), yp2.data.cpu().numpy().tolist(), np.argmax(predict_type.data.cpu().numpy(), 1))
-        answer_dict.update(answer_dict_)
+            logit1, logit2, predict_type, predict_support, yp1, yp2 = model(context_idxs, ques_idxs, context_char_idxs, ques_char_idxs, context_lens, start_mapping, end_mapping, all_mapping, return_yp=True)
+            answer_dict_ = convert_tokens(eval_file, data['ids'], yp1.data.cpu().numpy().tolist(), yp2.data.cpu().numpy().tolist(), np.argmax(predict_type.data.cpu().numpy(), 1))
+            answer_dict.update(answer_dict_)
 
-        predict_support_np = torch.sigmoid(predict_support[:, :, 1]).data.cpu().numpy()
-        for i in range(predict_support_np.shape[0]):
-            cur_sp_pred = []
-            cur_id = data['ids'][i]
-            for j in range(predict_support_np.shape[1]):
-                if j >= len(eval_file[cur_id]['sent2title_ids']): break
-                if predict_support_np[i, j] > sp_th:
-                    cur_sp_pred.append(eval_file[cur_id]['sent2title_ids'][j])
-            sp_dict.update({cur_id: cur_sp_pred})
+            predict_support_np = torch.sigmoid(predict_support[:, :, 1]).data.cpu().numpy()
+            for i in range(predict_support_np.shape[0]):
+                cur_sp_pred = []
+                cur_id = data['ids'][i]
+                for j in range(predict_support_np.shape[1]):
+                    if j >= len(eval_file[cur_id]['sent2title_ids']): break
+                    if predict_support_np[i, j] > sp_th:
+                        cur_sp_pred.append(eval_file[cur_id]['sent2title_ids'][j])
+                sp_dict.update({cur_id: cur_sp_pred})
 
-    prediction = {'answer': answer_dict, 'sp': sp_dict}
-    with open(prediction_file, 'w') as f:
-        json.dump(prediction, f)
+        prediction = {'answer': answer_dict, 'sp': sp_dict}
+        with open(prediction_file, 'w') as f:
+            json.dump(prediction, f)
 
 def test(config):
     with open(config.word_emb_file, "r") as fh:
