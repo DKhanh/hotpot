@@ -140,6 +140,14 @@ def get_buckets(record_file):
     datapoints = torch.load(record_file)
     return [datapoints]
 
+def get_buckets2(record_file):
+    # datapoints = pickle.load(open(record_file, 'rb'))
+    datapoints = torch.load(record_file)
+    len_data = int(len(datapoints)*2/3)
+    datapoints2 = datapoints[:-len_data]
+    del datapoints
+    return [datapoints2]
+
 def convert_tokens(eval_file, qa_id, pp1, pp2, p_type):
     answer_dict = {}
     for qid, p1, p2, type in zip(qa_id, pp1, pp2, p_type):
