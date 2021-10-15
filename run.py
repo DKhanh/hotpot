@@ -63,8 +63,8 @@ def train(config):
         logging('    - {} : {}'.format(k, v))
 
     logging("Building model...")
-    train_buckets = get_buckets2(config.train_record_file)
-    dev_buckets = get_buckets2(config.dev_record_file)
+    train_buckets = get_buckets(config.train_record_file)
+    dev_buckets = get_buckets(config.dev_record_file)
 
     def build_train_iterator():
         return DataIterator(train_buckets, config.batch_size, config.para_limit, config.ques_limit, config.char_limit, True, config.sent_limit)
